@@ -32,7 +32,7 @@
    </column>
    <column>
     <property name="text">
-     <string>Constraint</string>
+     <string>ID</string>
     </property>
    </column>
    <column>

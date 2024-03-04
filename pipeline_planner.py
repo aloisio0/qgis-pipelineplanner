@@ -21,9 +21,11 @@
  *                                                                         *
  ***************************************************************************/
 """
-from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication
+from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication, Qt
 from qgis.PyQt.QtGui import QIcon
-from qgis.PyQt.QtWidgets import QAction
+from qgis.PyQt.QtWidgets import QAction, QMessageBox, QTableWidgetItem
+from qgis.gui import QgsMapToolEmitPoint, QgsRubberBand
+from qgis.core import QgsProject
 
 # Initialize Qt resources from file resources.py
 from .resources import *
@@ -45,9 +47,20 @@ class PipelinePlanner:
         """
         # Save reference to the QGIS interface
         self.iface = iface
+
+        self.canvas = self.iface.mapCanvas()  # Variável para conectar-se a interface (tela do mapa)
+
         # initialize plugin directory
         self.plugin_dir = os.path.dirname(__file__)
         # initialize locale
+
+        self.addPipeLinePoint = QgsMapToolEmitPoint(self.canvas)
+        # Criando uma instância da classe do mapa do QGIS, ferramenta de mapa que simplesmente emite um ponto ao clicar
+        self.rbPiprline = QgsRubberBand(self.canvas)
+        # Criando uma instância da classe para desenhar características transitórias, por padrão é a geometria é linha
+        self.rbPiprline.setColor(Qt.red)  # Alterando a cor da linha
+        self.rbPiprline.setWidth(4)  # Alterando a largura da linha
+
         locale = QSettings().value('locale/userLocale')[0:2]
         locale_path = os.path.join(
             self.plugin_dir,
@@ -66,6 +79,8 @@ class PipelinePlanner:
         # Check if plugin was started the first time in current QGIS session
         # Must be set in initGui() to survive plugin reloads
         self.first_start = None
+
+        self.dlg = PipelinePlannerDialog()  # Criando uma instância da caixa de diálogo dos resultados
 
     # noinspection PyMethodMayBeStatic
     def tr(self, message):
@@ -170,6 +185,13 @@ class PipelinePlanner:
         # will be set False in run()
         self.first_start = True
 
+        self.addPipeLinePoint.canvasClicked.connect(self.evaluatePipeline)
+        # Conectando o sinal da instância da Classe do mapa ao slot personalizado que será criado
+        # Alterando a larcuga das colunas
+        self.dlg.tblImpacts.setColumnWidth(1, 75)
+        self.dlg.tblImpacts.setColumnWidth(2, 150)
+        self.dlg.tblImpacts.setColumnWidth(3, 75)
+        
 
     def unload(self):
         """Removes the plugin menu item and icon from QGIS GUI."""
@@ -183,18 +205,78 @@ class PipelinePlanner:
     def run(self):
         """Run method that performs all the real work"""
 
-        # Create the dialog with elements (after translation) and keep reference
-        # Only create GUI ONCE in callback, so that it will only load when the plugin is started
-        if self.first_start == True:
-            self.first_start = False
-            self.dlg = PipelinePlannerDialog()
+        self.canvas.setMapTool(self.addPipeLinePoint)
+        # Definindo a ferramenta de mapa que está sendo usada atualmente na tela, no caso a ferramenta que foi criada
 
-        # show the dialog
-        self.dlg.show()
-        # Run the dialog event loop
-        result = self.dlg.exec_()
-        # See if OK was pressed
-        if result:
-            # Do something useful here - delete the line containing pass and
-            # substitute with your code.
-            pass
+    def evaluatePipeline(self, point, button):
+        """"""
+        if button == Qt.LeftButton:  # Verificando se o usuário clicou com o botão esquerdo do mouse
+            self.rbPiprline.addPoint(point)  # Adicionar o ponto a classe QgsRubberBand, ao elástico
+            self.rbPiprline.show()  # exibir o ponto
+        elif button == Qt.RightButton:  # Verificando se o usuário clicou com o botão direito do mouse
+            pipeline = self.rbPiprline.asGeometry()  # Retorna o elástico como uma Geometria
+
+            self.dlg.tblImpacts.setRowCount(0)  # Limpando a tabela
+            lyrRaptor = QgsProject.instance().mapLayersByName("Raptor Buffer")[0]  # Acessando o Layer "Raptor Nests"
+            raptors = lyrRaptor.getFeatures(pipeline.boundingBox())
+            # Acessando os Features do Layer "Raptor Nests" que estão proximos ao pipeline
+            for raptor in raptors:
+                valConstraint = raptor.attribute("recentspec")  # Coletando a Espécie
+                valID = raptor.attribute("Nest_ID")  # Coletando o ID
+                valStatus = raptor.attribute("recentstat")  # Coletando o Type
+                valDistance = pipeline.distance(raptor.geometry().centroid())
+                # Coletando a distância do Nest a pipeline
+                if raptor.geometry().intersects(pipeline):
+                    row = self.dlg.tblImpacts.rowCount()  # Determinando o número de linhas na tabela
+                    self.dlg.tblImpacts.insertRow(row)  # Adicionando uma linha no final da Tabela
+                    self.dlg.tblImpacts.setItem(row, 0, QTableWidgetItem(str(valConstraint)))
+                    # Adicionando o item Espécie na linha
+                    self.dlg.tblImpacts.setItem(row, 1, QTableWidgetItem(str(valID)))  # Adicionando o item ID na linha
+                    self.dlg.tblImpacts.setItem(row, 2, QTableWidgetItem(str(valStatus)))
+                    # Adicionando o item Status na linha
+                    self.dlg.tblImpacts.setItem(row, 3, QTableWidgetItem("{:4.5f}".format(valDistance)))
+                    # Adicionando o item Distance na linha
+
+            lyrEagle = QgsProject.instance().mapLayersByName("BAEA Buffer")[0]  # Acessando o Layer "BAEA Buffer"
+            eagles = lyrEagle.getFeatures(
+                pipeline.boundingBox())  # Acessando os Features do Layer "BAEA Buffer" que estão proximos ao pipeline
+            for eagle in eagles:
+                valConstraint = "BAEA Nest"
+                valID = eagle.attribute("nest_id")  # Coletando o ID
+                valStatus = eagle.attribute("status")  # Coletando o Type
+                valDistance = pipeline.distance(eagle.geometry().centroid())  # Coletando a distância do Nest a pipeline
+                if eagle.geometry().intersects(pipeline):
+                    row = self.dlg.tblImpacts.rowCount()  # Determinando o número de linhas na tabela
+                    self.dlg.tblImpacts.insertRow(row)  # Adicionando uma linha no final da Tabela
+                    self.dlg.tblImpacts.setItem(row, 0, QTableWidgetItem(
+                        str(valConstraint)))  # Adicionando o item Espécie na linha
+                    self.dlg.tblImpacts.setItem(row, 1, QTableWidgetItem(str(valID)))  # Adicionando o item ID na linha
+                    self.dlg.tblImpacts.setItem(row, 2,
+                                                QTableWidgetItem(str(valStatus)))  # Adicionando o item Status na linha
+                    self.dlg.tblImpacts.setItem(row, 3, QTableWidgetItem(
+                        "{:4.5f}".format(valDistance)))  # Adicionando o item Distance na linha
+
+            lyrBUOWL = QgsProject.instance().mapLayersByName("BUOWL Buffer")[0]  # Acessando o Layer "BUOWL Buffer"
+            buowls = lyrBUOWL.getFeatures(
+                pipeline.boundingBox())  # Acessando os Features do Layer "BUOWL Buffer" que estão proximos ao pipeline
+            for buowl in buowls:
+                valConstraint = "BUOWL Habitat"
+                valID = buowl.attribute("habitat_id")  # Coletando o ID
+                valStatus = buowl.attribute("recentstat")  # Coletando o Type
+                valDistance = pipeline.distance(
+                    buowl.geometry().buffer(-0.001, 5))  # Coletando a distância do Nest a pipeline
+                if buowl.geometry().intersects(pipeline):
+                    row = self.dlg.tblImpacts.rowCount()  # Determinando o número de linhas na tabela
+                    self.dlg.tblImpacts.insertRow(row)  # Adicionando uma linha no final da Tabela
+                    self.dlg.tblImpacts.setItem(row, 0, QTableWidgetItem(
+                        str(valConstraint)))  # Adicionando o item Espécie na linha
+                    self.dlg.tblImpacts.setItem(row, 1, QTableWidgetItem(str(valID)))  # Adicionando o item ID na linha
+                    self.dlg.tblImpacts.setItem(row, 2,
+                                                QTableWidgetItem(str(valStatus)))  # Adicionando o item Status na linha
+                    self.dlg.tblImpacts.setItem(row, 3, QTableWidgetItem(
+                        "{:4.5f}".format(valDistance)))  # Adicionando o item Distance na linha
+
+            self.dlg.show()
+
+            self.rbPiprline.reset()  # encerrar o elástico e iniciar um novo
+        
